@@ -194,6 +194,13 @@ type Selector interface {
 	Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error)
 }
 
+// StoppableSelector is an optional interface for selectors that hold resources.
+// Selectors that implement this interface will have Stop called during shutdown.
+type StoppableSelector interface {
+	Selector
+	Stop()
+}
+
 // Hook captures lifecycle callbacks for observing auth changes.
 type Hook interface {
 	// OnAuthRegistered fires when a new auth is registered.
@@ -260,8 +267,8 @@ type Manager struct {
 	fallbackMaxDepth atomic.Int32
 
 	// Auto refresh state
-	refreshCancel    context.CancelFunc
-	refreshSemaphore chan struct{}
+	refreshCancel context.CancelFunc
+	refreshLoop   *authAutoRefreshLoop
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -280,7 +287,6 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		auths:            make(map[string]*Auth),
 		providerOffsets:  make(map[string]int),
 		modelPoolOffsets: make(map[string]int),
-		refreshSemaphore: make(chan struct{}, refreshMaxConcurrency),
 	}
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
@@ -310,6 +316,16 @@ func (m *Manager) syncScheduler() {
 		return
 	}
 	m.syncSchedulerFromSnapshot(m.snapshotAuths())
+}
+
+func (m *Manager) snapshotAuths() []*Auth {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Auth, 0, len(m.auths))
+	for _, a := range m.auths {
+		out = append(out, a.Clone())
+	}
+	return out
 }
 
 // RefreshSchedulerEntry re-upserts a single auth into the scheduler so that its
@@ -721,17 +737,36 @@ func countRemainingProviderOptions(currentProvider string, providers []string, t
 	return len(remaining)
 }
 
+func shouldPreserveAttemptBudgetForStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) shouldCountAttemptBudget(err error, currentProvider string, providers []string, tried map[string]struct{}) bool {
 	if err == nil {
 		return true
 	}
-	if statusCodeFromError(err) != http.StatusTooManyRequests {
+	statusCode := statusCodeFromError(err)
+	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
 		return true
 	}
 	m.mu.RLock()
 	remainingProviders := countRemainingProviderOptions(currentProvider, providers, tried, m.auths)
 	m.mu.RUnlock()
 	return remainingProviders == 0
+}
+
+func logProviderFallbackRetry(ctx context.Context, provider, model string, err error) {
+	statusCode := statusCodeFromError(err)
+	if !shouldPreserveAttemptBudgetForStatus(statusCode) {
+		return
+	}
+	entry := logEntryWithRequestID(ctx)
+	entry.Warnf("provider %s failed with upstream status %d for model %s; retrying with another untried provider", provider, statusCode, strings.TrimSpace(model))
 }
 
 func (m *Manager) availableAuthsForRouteModel(auths []*Auth, provider, routeModel string, now time.Time) ([]*Auth, error) {
@@ -1423,6 +1458,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
 	}
+	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	return auth.Clone(), nil
@@ -1453,6 +1489,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
 	}
+	m.queueRefreshReschedule(auth.ID)
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	return auth.Clone(), nil
@@ -1624,7 +1661,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			continue
 		}
 		var authErr error
-		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1650,21 +1686,22 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
-					countBudget = false
-				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
 		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			continue
@@ -1715,7 +1752,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			continue
 		}
 		var authErr error
-		countBudget := true
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
 			execReq := req
@@ -1741,21 +1777,22 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
-				if !m.shouldCountAttemptBudget(errExec, provider, providers, tried) {
-					countBudget = false
-				}
 				authErr = errExec
 				continue
 			}
 			m.MarkResult(attemptCtx, result)
 			return resp, nil
 		}
+		countBudget := m.shouldCountAttemptBudget(authErr, provider, providers, tried)
 		if countBudget {
 			attempted[auth.ID] = struct{}{}
 		}
 		if authErr != nil {
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, authErr)
 			}
 			lastErr = authErr
 			continue
@@ -2027,6 +2064,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			if !m.shouldCountAttemptBudget(errStream, provider, providers, tried) {
 				countBudget = false
+			}
+			if !countBudget {
+				logProviderFallbackRetry(execCtx, provider, routeModel, errStream)
 			}
 			if countBudget {
 				attempted[auth.ID] = struct{}{}
@@ -2554,6 +2594,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	var authSnapshot *Auth
+	var handoffSnapshots []*Auth
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -2672,7 +2713,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.PrimaryInfo != nil && auth.PrimaryInfo.IsPrimary {
 						cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 						if cfg != nil && cfg.AntigravityPrimaryHandoff {
-							m.promoteNextAntigravityPrimary(ctx, auth.ID)
+							handoffSnapshots = m.promoteNextAntigravityPrimary(ctx, auth.ID)
 						}
 					}
 				}
@@ -2687,6 +2728,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+	}
+	if m.scheduler != nil {
+		for _, snapshot := range handoffSnapshots {
+			if snapshot == nil {
+				continue
+			}
+			m.scheduler.upsertAuth(snapshot)
+		}
 	}
 
 	if clearModelQuota && result.Model != "" {
@@ -2928,9 +2977,9 @@ func isAntigravityHandoffError(statusCode int) bool {
 }
 
 // promoteNextAntigravityPrimary disables the current primary Antigravity credential
-// and promotes the next one in order (wrap-around to first if all exhausted).
+// and promotes the next standby in ascending order.
 // Must be called with m.mu held.
-func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) {
+func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuthID string) []*Auth {
 	var allAntigravity []*Auth
 	for _, auth := range m.auths {
 		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") && auth.PrimaryInfo != nil {
@@ -2938,7 +2987,7 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		}
 	}
 	if len(allAntigravity) == 0 {
-		return
+		return nil
 	}
 
 	sort.Slice(allAntigravity, func(i, j int) bool {
@@ -2953,24 +3002,41 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		}
 	}
 	if currentIdx < 0 {
-		return
+		return nil
+	}
+
+	nextIdx := -1
+	for i := currentIdx + 1; i < len(allAntigravity); i++ {
+		if allAntigravity[i] == nil || allAntigravity[i].PrimaryInfo == nil {
+			continue
+		}
+		nextIdx = i
+		break
+	}
+	if nextIdx < 0 {
+		return nil
 	}
 
 	current := allAntigravity[currentIdx]
+	now := time.Now()
 	current.Disabled = true
 	current.Status = StatusDisabled
 	current.PrimaryInfo.IsPrimary = false
-	current.UpdatedAt = time.Now()
+	current.UpdatedAt = now
+	SyncPrimaryInfoMetadata(current)
 	_ = m.persist(ctx, current)
 
-	nextIdx := (currentIdx + 1) % len(allAntigravity)
 	next := allAntigravity[nextIdx]
 	next.Disabled = false
 	next.Status = StatusActive
 	next.StatusMessage = ""
 	next.Unavailable = false
+	next.LastError = nil
+	next.NextRetryAfter = time.Time{}
+	next.Quota = QuotaState{}
 	next.PrimaryInfo.IsPrimary = true
-	next.UpdatedAt = time.Now()
+	next.UpdatedAt = now
+	SyncPrimaryInfoMetadata(next)
 	_ = m.persist(ctx, next)
 
 	log.WithFields(log.Fields{
@@ -2979,6 +3045,11 @@ func (m *Manager) promoteNextAntigravityPrimary(ctx context.Context, currentAuth
 		"old_order":   current.PrimaryInfo.Order,
 		"new_order":   next.PrimaryInfo.Order,
 	}).Info("antigravity primary handoff: promoted next credential")
+
+	if current.ID == next.ID {
+		return []*Auth{current.Clone()}
+	}
+	return []*Auth{current.Clone(), next.Clone()}
 }
 
 func isModelSupportErrorMessage(message string) bool {
@@ -3612,80 +3683,60 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 	if interval <= 0 {
 		interval = refreshCheckInterval
 	}
-	if m.refreshCancel != nil {
-		m.refreshCancel()
-		m.refreshCancel = nil
+
+	m.mu.Lock()
+	cancelPrev := m.refreshCancel
+	m.refreshCancel = nil
+	m.refreshLoop = nil
+	m.mu.Unlock()
+	if cancelPrev != nil {
+		cancelPrev()
 	}
-	ctx, cancel := context.WithCancel(parent)
-	m.refreshCancel = cancel
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		m.checkRefreshes(ctx)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				m.checkRefreshes(ctx)
-			}
-		}
-	}()
+
+	ctx, cancelCtx := context.WithCancel(parent)
+	workers := refreshMaxConcurrency
+	if cfg, ok := m.runtimeConfig.Load().(*internalconfig.Config); ok && cfg != nil && cfg.AuthAutoRefreshWorkers > 0 {
+		workers = cfg.AuthAutoRefreshWorkers
+	}
+	loop := newAuthAutoRefreshLoop(m, interval, workers)
+
+	m.mu.Lock()
+	m.refreshCancel = cancelCtx
+	m.refreshLoop = loop
+	m.mu.Unlock()
+
+	loop.rebuild(time.Now())
+	go loop.run(ctx)
 }
 
 // StopAutoRefresh cancels the background refresh loop, if running.
+// It also stops the selector if it implements StoppableSelector.
 func (m *Manager) StopAutoRefresh() {
-	if m.refreshCancel != nil {
-		m.refreshCancel()
-		m.refreshCancel = nil
+	m.mu.Lock()
+	cancel := m.refreshCancel
+	m.refreshCancel = nil
+	m.refreshLoop = nil
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	// Stop selector if it implements StoppableSelector (e.g., SessionAffinitySelector)
+	if stoppable, ok := m.selector.(StoppableSelector); ok {
+		stoppable.Stop()
 	}
 }
 
-func (m *Manager) checkRefreshes(ctx context.Context) {
-	// log.Debugf("checking refreshes")
-	now := time.Now()
-	snapshot := m.snapshotAuths()
-	for _, a := range snapshot {
-		typ, _ := a.AccountInfo()
-		if typ != "api_key" {
-			if !m.shouldRefresh(a, now) {
-				continue
-			}
-			log.Debugf("checking refresh for %s, %s, %s", a.Provider, a.ID, typ)
-
-			if exec := m.executorFor(a.Provider); exec == nil {
-				continue
-			}
-			if !m.markRefreshPending(a.ID, now) {
-				continue
-			}
-			go m.refreshAuthWithLimit(ctx, a.ID)
-		}
-	}
-}
-
-func (m *Manager) refreshAuthWithLimit(ctx context.Context, id string) {
-	if m.refreshSemaphore == nil {
-		m.refreshAuth(ctx, id)
+func (m *Manager) queueRefreshReschedule(authID string) {
+	if m == nil || authID == "" {
 		return
 	}
-	select {
-	case m.refreshSemaphore <- struct{}{}:
-		defer func() { <-m.refreshSemaphore }()
-	case <-ctx.Done():
-		return
-	}
-	m.refreshAuth(ctx, id)
-}
-
-func (m *Manager) snapshotAuths() []*Auth {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]*Auth, 0, len(m.auths))
-	for _, a := range m.auths {
-		out = append(out, a.Clone())
+	loop := m.refreshLoop
+	m.mu.RUnlock()
+	if loop == nil {
+		return
 	}
-	return out
+	loop.queueReschedule(authID)
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
@@ -3895,16 +3946,20 @@ func lookupMetadataTime(meta map[string]any, keys ...string) (time.Time, bool) {
 
 func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	auth, ok := m.auths[id]
 	if !ok || auth == nil || auth.Disabled {
+		m.mu.Unlock()
 		return false
 	}
 	if !auth.NextRefreshAfter.IsZero() && now.Before(auth.NextRefreshAfter) {
+		m.mu.Unlock()
 		return false
 	}
 	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
 	m.auths[id] = auth
+	m.mu.Unlock()
+
+	m.queueRefreshReschedule(id)
 	return true
 }
 
@@ -3931,16 +3986,21 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
+		shouldReschedule := false
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)
 			current.LastError = &Error{Message: err.Error()}
 			m.auths[id] = current
+			shouldReschedule = true
 			if m.scheduler != nil {
 				m.scheduler.upsertAuth(current.Clone())
 			}
 		}
 		m.mu.Unlock()
+		if shouldReschedule {
+			m.queueRefreshReschedule(id)
+		}
 		return
 	}
 	if updated == nil {
