@@ -6,7 +6,6 @@ package cliproxy
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
@@ -209,32 +208,17 @@ func (b *Builder) Build() (*Service, error) {
 		}
 
 		strategy := ""
-		sessionAffinity := false
-		sessionAffinityTTL := time.Hour
+		mode := ""
 		if b.cfg != nil {
 			strategy = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Strategy))
-			// Support both legacy ClaudeCodeSessionAffinity and new universal SessionAffinity
-			sessionAffinity = b.cfg.Routing.ClaudeCodeSessionAffinity || b.cfg.Routing.SessionAffinity
-			if ttlStr := strings.TrimSpace(b.cfg.Routing.SessionAffinityTTL); ttlStr != "" {
-				if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
-					sessionAffinityTTL = parsed
-				}
-			}
+			mode = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Mode))
 		}
 		var selector coreauth.Selector
 		switch strategy {
 		case "fill-first", "fillfirst", "ff":
 			selector = &coreauth.FillFirstSelector{}
 		default:
-			selector = &coreauth.RoundRobinSelector{}
-		}
-
-		// Wrap with session affinity if enabled (failover is always on)
-		if sessionAffinity {
-			selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-				Fallback: selector,
-				TTL:      sessionAffinityTTL,
-			})
+			selector = &coreauth.RoundRobinSelector{Mode: mode}
 		}
 
 		coreManager = coreauth.NewManager(tokenStore, selector, nil)
@@ -243,6 +227,8 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
+	coreManager.SetFallbackModels(b.cfg.Routing.FallbackModels)
+	coreManager.SetFallbackChain(b.cfg.Routing.FallbackChain, b.cfg.Routing.FallbackMaxDepth)
 
 	service := &Service{
 		cfg:            b.cfg,

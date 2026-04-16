@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilo"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 )
 
 // KiloAuthenticator implements the login flow for Kilo AI accounts.
@@ -46,8 +48,17 @@ func (a *KiloAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 		return nil, fmt.Errorf("failed to initiate device flow: %w", err)
 	}
 
-	fmt.Printf("Please visit: %s\n", resp.VerificationURL)
-	fmt.Printf("And enter code: %s\n", resp.Code)
+	fmt.Printf("\nTo authenticate, please visit: %s\n", resp.VerificationURL)
+	fmt.Printf("And enter the code: %s\n\n", resp.Code)
+
+	// Try to open the browser automatically
+	if !opts.NoBrowser {
+		if browser.IsAvailable() {
+			if errOpen := browser.OpenURL(resp.VerificationURL); errOpen != nil {
+				log.Warnf("Failed to open browser automatically: %v", errOpen)
+			}
+		}
+	}
 
 	fmt.Println("Waiting for authorization...")
 	status, err := kilocodeAuth.PollForToken(ctx, resp.Code)

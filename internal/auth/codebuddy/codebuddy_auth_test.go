@@ -19,3 +19,4 @@ func TestDecodeUserID_ValidJWT(t *testing.T) {
 		t.Errorf("expected 'test-user-id-123', got '%s'", userID)
 	}
 }
+

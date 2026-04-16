@@ -748,3 +748,4 @@ func TestExtractRegionFromMetadata(t *testing.T) {
 		})
 	}
 }
+

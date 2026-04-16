@@ -72,18 +72,18 @@ func TestManager_ShouldRetryAfterError_UsesOAuthModelAliasForCooldown(t *testing
 	m := NewManager(nil, nil, nil)
 	m.SetRetryConfig(3, 30*time.Second, 0)
 	m.SetOAuthModelAlias(map[string][]internalconfig.OAuthModelAlias{
-		"iflow": {
-			{Name: "deepseek-v3.1", Alias: "pool-model"},
+		"qwen": {
+			{Name: "qwen3.6-plus", Alias: "coder-model"},
 		},
 	})
 
-	routeModel := "pool-model"
-	upstreamModel := "deepseek-v3.1"
+	routeModel := "coder-model"
+	upstreamModel := "qwen3.6-plus"
 	next := time.Now().Add(5 * time.Second)
 
 	auth := &Auth{
 		ID:       "auth-1",
-		Provider: "iflow",
+		Provider: "qwen",
 		ModelStates: map[string]*ModelState{
 			upstreamModel: {
 				Unavailable:    true,
@@ -102,7 +102,7 @@ func TestManager_ShouldRetryAfterError_UsesOAuthModelAliasForCooldown(t *testing
 	}
 
 	_, _, maxWait := m.retrySettings()
-	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 429, Message: "quota"}, 0, []string{"iflow"}, routeModel, maxWait)
+	wait, shouldRetry := m.shouldRetryAfterError(&Error{HTTPStatus: 429, Message: "quota"}, 0, []string{"qwen"}, routeModel, maxWait)
 	if !shouldRetry {
 		t.Fatalf("expected shouldRetry=true, got false (wait=%v)", wait)
 	}
