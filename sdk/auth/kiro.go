@@ -269,6 +269,24 @@ func (a *KiroAuthenticator) LoginWithCLI(ctx context.Context, cfg *config.Config
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
 
+	// Kiro CLI OAuth tokens may not always carry email claim in JWT.
+	// Fill email from CodeWhisperer API before naming auth file.
+	if strings.TrimSpace(tokenData.Email) == "" {
+		cwClient := kiroauth.NewCodeWhispererClient(cfg, "")
+		if usageResp, usageErr := cwClient.GetUsageLimits(
+			ctx,
+			tokenData.AccessToken,
+			tokenData.ClientID,
+			tokenData.RefreshToken,
+			tokenData.ProfileArn,
+			tokenData.AuthMethod,
+		); usageErr == nil && usageResp != nil && usageResp.UserInfo != nil && strings.TrimSpace(usageResp.UserInfo.Email) != "" {
+			tokenData.Email = usageResp.UserInfo.Email
+		} else {
+			tokenData.Email = kiroauth.FetchUserEmailWithFallback(ctx, cfg, tokenData.AccessToken, tokenData.ClientID, tokenData.RefreshToken, tokenData.AuthMethod)
+		}
+	}
+
 	return a.createAuthRecord(tokenData, "cli")
 }
 
