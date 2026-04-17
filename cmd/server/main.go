@@ -92,6 +92,7 @@ func main() {
 	var kiroAWSAuthCode bool
 	var kiroImport bool
 	var kiroIDCLogin bool
+	var kiroCLILogin bool
 	var kiroIDCStartURL string
 	var kiroIDCRegion string
 	var kiroIDCFlow string
@@ -135,6 +136,7 @@ func main() {
 	flag.BoolVar(&kiroAWSAuthCode, "kiro-aws-authcode", false, "Login to Kiro using AWS Builder ID (authorization code flow, better UX)")
 	flag.BoolVar(&kiroImport, "kiro-import", false, "Import Kiro token from Kiro IDE (~/.aws/sso/cache/kiro-auth-token.json)")
 	flag.BoolVar(&kiroIDCLogin, "kiro-idc-login", false, "Login to Kiro using IAM Identity Center (IDC)")
+	flag.BoolVar(&kiroCLILogin, "kiro-cli-login", false, "Login to Kiro using native Kiro CLI OAuth flow")
 	flag.StringVar(&kiroIDCStartURL, "kiro-idc-start-url", "", "IDC start URL (required with --kiro-idc-login)")
 	flag.StringVar(&kiroIDCRegion, "kiro-idc-region", "", "IDC region (default: us-east-1)")
 	flag.StringVar(&kiroIDCFlow, "kiro-idc-flow", "", "IDC flow type: authcode (default) or device")
@@ -601,6 +603,10 @@ func main() {
 		setKiroIncognitoMode(cfg, useIncognito, noIncognito)
 		kiro.InitFingerprintConfig(cfg)
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
+	} else if kiroCLILogin {
+		setKiroIncognitoMode(cfg, useIncognito, noIncognito)
+		kiro.InitFingerprintConfig(cfg)
+		cmd.DoKiroCLILogin(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {

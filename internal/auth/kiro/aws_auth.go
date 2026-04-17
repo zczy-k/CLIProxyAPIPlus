@@ -124,7 +124,7 @@ func (k *KiroAuth) makeRequest(ctx context.Context, path string, tokenData *Kiro
 	}
 
 	accountKey := GetAccountKey(tokenData.ClientID, tokenData.RefreshToken)
-	setRuntimeHeaders(req, tokenData.AccessToken, accountKey)
+	setRuntimeHeaders(req, tokenData.AccessToken, accountKey, tokenData.AuthMethod)
 
 	resp, err := k.httpClient.Do(req)
 	if err != nil {
@@ -160,7 +160,7 @@ func (k *KiroAuth) makeRequest(ctx context.Context, path string, tokenData *Kiro
 //   - error: An error if the request fails
 func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData) (*KiroUsageInfo, error) {
 	queryParams := map[string]string{
-		"origin":       "AI_EDITOR",
+		"origin":       OriginForAuthMethod(tokenData.AuthMethod),
 		"profileArn":   tokenData.ProfileArn,
 		"resourceType": "AGENTIC_REQUEST",
 	}
@@ -210,7 +210,7 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 //   - error: An error if the request fails
 func (k *KiroAuth) ListAvailableModels(ctx context.Context, tokenData *KiroTokenData) ([]*KiroModel, error) {
 	queryParams := map[string]string{
-		"origin":     "AI_EDITOR",
+		"origin":     OriginForAuthMethod(tokenData.AuthMethod),
 		"profileArn": tokenData.ProfileArn,
 	}
 

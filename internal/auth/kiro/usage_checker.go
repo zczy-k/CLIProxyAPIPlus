@@ -77,7 +77,7 @@ func (c *UsageChecker) CheckUsage(ctx context.Context, tokenData *KiroTokenData)
 	}
 
 	queryParams := map[string]string{
-		"origin":       "AI_EDITOR",
+		"origin":       OriginForAuthMethod(tokenData.AuthMethod),
 		"profileArn":   tokenData.ProfileArn,
 		"resourceType": "AGENTIC_REQUEST",
 	}
@@ -92,7 +92,7 @@ func (c *UsageChecker) CheckUsage(ctx context.Context, tokenData *KiroTokenData)
 	}
 
 	accountKey := GetAccountKey(tokenData.ClientID, tokenData.RefreshToken)
-	setRuntimeHeaders(req, tokenData.AccessToken, accountKey)
+	setRuntimeHeaders(req, tokenData.AccessToken, accountKey, tokenData.AuthMethod)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -122,6 +122,7 @@ func (c *UsageChecker) CheckUsageByAccessToken(ctx context.Context, accessToken,
 	tokenData := &KiroTokenData{
 		AccessToken: accessToken,
 		ProfileArn:  profileArn,
+		AuthMethod:  "kiro-cli",
 	}
 	return c.CheckUsage(ctx, tokenData)
 }

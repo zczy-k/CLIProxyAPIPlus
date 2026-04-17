@@ -371,8 +371,9 @@ func buildKiroEndpointConfigs(region string) []kiroEndpointConfig {
 		},
 		{
 			// Fallback: CodeWhisperer endpoint (legacy, only works in us-east-1)
+			// Keep AI_EDITOR semantics even for kiro-cli auth; sentinel value is normalized by translator.
 			URL:       fmt.Sprintf("https://codewhisperer.%s.amazonaws.com/generateAssistantResponse", region),
-			Origin:    "AI_EDITOR",
+			Origin:    "KIRO_AI_EDITOR",
 			AmzTarget: "AmazonCodeWhispererStreamingService.GenerateAssistantResponse",
 			Name:      "CodeWhisperer",
 		},
@@ -494,21 +495,59 @@ func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
 func (e *KiroExecutor) Identifier() string { return "kiro" }
 
 // applyDynamicFingerprint applies account-specific fingerprint headers to the request.
+func isKiroCLIAuth(auth *cliproxyauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Metadata != nil {
+		if method, ok := auth.Metadata["auth_method"].(string); ok && kiroauth.IsKiroCLIAuthMethod(method) {
+			return true
+		}
+	}
+	if auth.Attributes != nil {
+		if method := auth.Attributes["auth_method"]; kiroauth.IsKiroCLIAuthMethod(method) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveRequestOrigin(auth *cliproxyauth.Auth, fallback string) string {
+	if isKiroCLIAuth(auth) {
+		if strings.EqualFold(strings.TrimSpace(fallback), kiroauth.KiroOriginAIEditor) {
+			return kiroauth.KiroOriginCLI
+		}
+		return fallback
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return kiroauth.KiroOriginAIEditor
+}
+
 func applyDynamicFingerprint(req *http.Request, auth *cliproxyauth.Auth) {
 	accountKey := getAccountKey(auth)
 	fp := kiroauth.GlobalFingerprintManager().GetFingerprint(accountKey)
+	kiroCLI := isKiroCLIAuth(auth)
 
-	req.Header.Set("User-Agent", fp.BuildUserAgent())
-	req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
-	req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
-	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	if kiroCLI {
+		req.Header.Set("User-Agent", fp.BuildRustStreamingUserAgent())
+		req.Header.Set("X-Amz-User-Agent", fp.BuildRustStreamingAmzUserAgent())
+		req.Header.Del("x-amzn-kiro-agent-mode")
+		req.Header.Set("x-amzn-codewhisperer-optout", "false")
+	} else {
+		req.Header.Set("User-Agent", fp.BuildUserAgent())
+		req.Header.Set("X-Amz-User-Agent", fp.BuildAmzUserAgent())
+		req.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
+		req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	}
 
 	keyPrefix := accountKey
 	if len(keyPrefix) > 8 {
 		keyPrefix = keyPrefix[:8]
 	}
-	log.Debugf("kiro: using dynamic fingerprint for account %s (SDK:%s, OS:%s/%s, Kiro:%s)",
-		keyPrefix+"...", fp.StreamingSDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
+	log.Debugf("kiro: using dynamic fingerprint for account %s (cli=%v, SDK:%s, OS:%s/%s, Kiro:%s)",
+		keyPrefix+"...", kiroCLI, fp.StreamingSDKVersion, fp.OSType, fp.OSVersion, fp.KiroVersion)
 }
 
 // PrepareRequest prepares the HTTP request before execution.
@@ -704,7 +743,7 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 		endpointConfig := endpointConfigs[endpointIdx]
 		url := endpointConfig.URL
 		// Use this endpoint's compatible Origin (critical for avoiding 403 errors)
-		currentOrigin = endpointConfig.Origin
+		currentOrigin = resolveRequestOrigin(auth, endpointConfig.Origin)
 
 		// Rebuild payload with the correct origin for this endpoint
 		// Each endpoint requires its matching Origin value in the request body
@@ -731,10 +770,6 @@ func (e *KiroExecutor) executeWithRetry(ctx context.Context, auth *cliproxyauth.
 			if endpointConfig.AmzTarget != "" {
 				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
 			}
-			// Kiro-specific headers
-			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
-			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
 
@@ -1146,7 +1181,7 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 		endpointConfig := endpointConfigs[endpointIdx]
 		url := endpointConfig.URL
 		// Use this endpoint's compatible Origin (critical for avoiding 403 errors)
-		currentOrigin = endpointConfig.Origin
+		currentOrigin = resolveRequestOrigin(auth, endpointConfig.Origin)
 
 		// Rebuild payload with the correct origin for this endpoint
 		// Each endpoint requires its matching Origin value in the request body
@@ -1174,10 +1209,6 @@ func (e *KiroExecutor) executeStreamWithRetry(ctx context.Context, auth *cliprox
 			if endpointConfig.AmzTarget != "" {
 				httpReq.Header.Set("X-Amz-Target", endpointConfig.AmzTarget)
 			}
-			// Kiro-specific headers
-			httpReq.Header.Set("x-amzn-kiro-agent-mode", kiroIDEAgentMode)
-			httpReq.Header.Set("x-amzn-codewhisperer-optout", "true")
-
 			// Apply dynamic fingerprint-based headers
 			applyDynamicFingerprint(httpReq, auth)
 
@@ -3719,6 +3750,11 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		// Builder ID refresh with default endpoint
 		log.Debugf("kiro executor: using SSO OIDC refresh for AWS Builder ID")
 		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
+	case kiroauth.IsKiroCLIAuthMethod(authMethod):
+		// Native kiro-cli OAuth refresh path with Kiro-CLI User-Agent
+		log.Debugf("kiro executor: using native Kiro CLI refresh endpoint")
+		oauth := kiroauth.NewKiroCLIOAuth(e.cfg)
+		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
 	default:
 		// Fallback to Kiro's OAuth refresh endpoint (for social auth: Google/GitHub)
 		log.Debugf("kiro executor: using Kiro OAuth refresh endpoint")
@@ -3745,7 +3781,9 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	if tokenData.ProfileArn != "" {
 		updated.Metadata["profile_arn"] = tokenData.ProfileArn
 	}
-	if tokenData.AuthMethod != "" {
+	if existingMethod, ok := updated.Metadata["auth_method"].(string); ok && kiroauth.IsKiroCLIAuthMethod(existingMethod) {
+		updated.Metadata["auth_method"] = "kiro-cli"
+	} else if tokenData.AuthMethod != "" {
 		updated.Metadata["auth_method"] = tokenData.AuthMethod
 	}
 	if tokenData.Provider != "" {
@@ -4173,8 +4211,13 @@ func (h *webSearchHandler) setMcpHeaders(req *http.Request) {
 	req.Header.Set("Accept", "*/*")
 
 	// 2. Kiro-specific headers (aligned with GAR)
-	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
-	req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	if isKiroCLIAuth(h.auth) {
+		req.Header.Del("x-amzn-kiro-agent-mode")
+		req.Header.Set("x-amzn-codewhisperer-optout", "false")
+	} else {
+		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+		req.Header.Set("x-amzn-codewhisperer-optout", "true")
+	}
 
 	// 3. User-Agent: Reuse applyDynamicFingerprint for consistency
 	applyDynamicFingerprint(req, h.auth)

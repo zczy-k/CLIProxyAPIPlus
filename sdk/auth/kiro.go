@@ -253,6 +253,25 @@ func (a *KiroAuthenticator) LoginWithAuthCode(ctx context.Context, cfg *config.C
 	return record, nil
 }
 
+func (a *KiroAuthenticator) LoginWithCLI(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("kiro auth: configuration is required")
+	}
+
+	oauth := kiroauth.NewKiroCLIOAuth(cfg)
+	noBrowser := false
+	if opts != nil {
+		noBrowser = opts.NoBrowser
+	}
+
+	tokenData, err := oauth.LoginWithCLI(ctx, noBrowser)
+	if err != nil {
+		return nil, fmt.Errorf("login failed: %w", err)
+	}
+
+	return a.createAuthRecord(tokenData, "cli")
+}
+
 // LoginWithGoogle performs OAuth login for Kiro with Google.
 // NOTE: Google login is not available for third-party applications due to AWS Cognito restrictions.
 // Please use AWS Builder ID or import your token from Kiro IDE.
@@ -380,6 +399,10 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 	case clientID != "" && clientSecret != "" && (authMethod == "builder-id" || authMethod == "idc"):
 		// Builder ID or IDC refresh with default endpoint (us-east-1)
 		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
+	case kiroauth.IsKiroCLIAuthMethod(authMethod):
+		// Native kiro-cli OAuth refresh path with Kiro-CLI User-Agent
+		oauth := kiroauth.NewKiroCLIOAuth(cfg)
+		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
 	default:
 		// Fallback to Kiro's refresh endpoint (for social auth: Google/GitHub)
 		oauth := kiroauth.NewKiroOAuth(cfg)
@@ -405,6 +428,9 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 	updated.Metadata["refresh_token"] = tokenData.RefreshToken
 	updated.Metadata["expires_at"] = tokenData.ExpiresAt
 	updated.Metadata["last_refresh"] = now.Format(time.RFC3339) // For double-check optimization
+	if authMethod == "kiro-cli" {
+		updated.Metadata["auth_method"] = "kiro-cli"
+	}
 	// Store clientId/clientSecret if they were loaded from device registration
 	if clientID != "" && updated.Metadata["client_id"] == nil {
 		updated.Metadata["client_id"] = clientID

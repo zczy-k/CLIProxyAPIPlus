@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	"sort"
 	"strings"
 	"time"
 
@@ -1680,11 +1681,105 @@ func marshalPayloadObject(original []byte, root map[string]any) []byte {
 	if root == nil {
 		return original
 	}
-	out, err := json.Marshal(root)
-	if err != nil {
-		return original
+	orderedKeys := extractTopLevelKeyOrder(original)
+	if len(orderedKeys) == 0 {
+		out, err := json.Marshal(root)
+		if err != nil {
+			return original
+		}
+		return out
 	}
-	return out
+
+	used := make(map[string]struct{}, len(root))
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+
+	writeField := func(key string, val any) bool {
+		keyJSON, err := json.Marshal(key)
+		if err != nil {
+			return false
+		}
+		valueJSON, err := json.Marshal(val)
+		if err != nil {
+			return false
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		buf.Write(keyJSON)
+		buf.WriteByte(':')
+		buf.Write(valueJSON)
+		first = false
+		return true
+	}
+
+	for _, key := range orderedKeys {
+		val, ok := root[key]
+		if !ok {
+			continue
+		}
+		if !writeField(key, val) {
+			return original
+		}
+		used[key] = struct{}{}
+	}
+
+	extraKeys := make([]string, 0)
+	for key := range root {
+		if _, ok := used[key]; !ok {
+			extraKeys = append(extraKeys, key)
+		}
+	}
+	sort.Strings(extraKeys)
+	for _, key := range extraKeys {
+		if !writeField(key, root[key]) {
+			return original
+		}
+	}
+
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
+func extractTopLevelKeyOrder(payload []byte) []string {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	start, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	startDelim, ok := start.(json.Delim)
+	if !ok || startDelim != '{' {
+		return nil
+	}
+
+	order := make([]string, 0)
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil
+		}
+		order = append(order, key)
+
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil
+		}
+	}
+
+	if _, err := dec.Token(); err != nil {
+		return nil
+	}
+
+	return order
 }
 
 func asObject(v any) (map[string]any, bool) {

@@ -454,7 +454,7 @@ func (c *SSOOIDCClient) LoginWithIDC(ctx context.Context, startURL, region strin
 			profileArn := c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
 
 			// Fetch user email
-			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "builder-id")
 			if email != "" {
 				fmt.Printf("  Logged in as: %s\n", email)
 			}
@@ -859,7 +859,7 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context) (*KiroTokenData,
 			}
 
 			// Fetch user email (tries CodeWhisperer API first, then userinfo endpoint, then JWT parsing)
-			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "builder-id")
 			if email != "" {
 				fmt.Printf("  Logged in as: %s\n", email)
 			}
@@ -968,7 +968,7 @@ func (c *SSOOIDCClient) tryListAvailableProfiles(ctx context.Context, accessToke
 
 	req.Header.Set("Content-Type", "application/json")
 	accountKey := GetAccountKey(clientID, refreshToken)
-	setRuntimeHeaders(req, accessToken, accountKey)
+	setRuntimeHeaders(req, accessToken, accountKey, "")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1457,7 +1457,7 @@ func (c *SSOOIDCClient) LoginWithBuilderIDAuthCode(ctx context.Context) (*KiroTo
 		fmt.Println("\n✓ Authentication successful!")
 
 		// Fetch user email (tries CodeWhisperer API first, then userinfo endpoint, then JWT parsing)
-		email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+		email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "idc")
 		if email != "" {
 			fmt.Printf("  Logged in as: %s\n", email)
 		}
@@ -1567,7 +1567,7 @@ func (c *SSOOIDCClient) LoginWithIDCAuthCode(ctx context.Context, startURL, regi
 		fmt.Println("Fetching profile information...")
 		profileArn := c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
 
-		email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+		email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "idc")
 		if email != "" {
 			fmt.Printf("  Logged in as: %s\n", email)
 		}

@@ -527,6 +527,22 @@ func GenerateTokenFileName(tokenData *KiroTokenData) string {
 // DefaultKiroRegion is the fallback region when none is specified.
 const DefaultKiroRegion = "us-east-1"
 
+const (
+	KiroOriginAIEditor = "AI_EDITOR"
+	KiroOriginCLI      = "KIRO_CLI"
+)
+
+func IsKiroCLIAuthMethod(authMethod string) bool {
+	return strings.EqualFold(strings.TrimSpace(authMethod), "kiro-cli")
+}
+
+func OriginForAuthMethod(authMethod string) string {
+	if IsKiroCLIAuthMethod(authMethod) {
+		return KiroOriginCLI
+	}
+	return KiroOriginAIEditor
+}
+
 // GetCodeWhispererLegacyEndpoint returns the legacy CodeWhisperer JSON-RPC endpoint.
 // This endpoint supports JSON-RPC style requests with x-amz-target headers.
 // The Q endpoint (q.{region}.amazonaws.com) does NOT support JSON-RPC style.

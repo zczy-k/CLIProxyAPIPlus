@@ -373,7 +373,7 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
 	machineID := fp.KiroHash
 
-	setRuntimeHeaders(req, accessToken, accountKey)
+	setRuntimeHeaders(req, accessToken, accountKey, "")
 
 	// Check Authorization header
 	if req.Header.Get("Authorization") != "Bearer "+accessToken {
@@ -419,6 +419,41 @@ func TestSetRuntimeHeaders(t *testing.T) {
 	// Check amz-sdk-request
 	if req.Header.Get("amz-sdk-request") != "attempt=1; max=1" {
 		t.Errorf("unexpected amz-sdk-request header: %s", req.Header.Get("amz-sdk-request"))
+	}
+}
+
+func TestSetRuntimeHeadersKiroCLI(t *testing.T) {
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	accessToken := "test-access-token-1234567890"
+	accountKey := GenerateAccountKey("test-client-id-12345")
+
+	setRuntimeHeaders(req, accessToken, accountKey, "kiro-cli")
+
+	if req.Header.Get("Authorization") != "Bearer "+accessToken {
+		t.Errorf("expected Authorization header 'Bearer %s', got '%s'", accessToken, req.Header.Get("Authorization"))
+	}
+
+	if got := req.Header.Get("User-Agent"); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI" {
+		t.Errorf("unexpected rust runtime User-Agent: %s", got)
+	}
+	if got := req.Header.Get("x-amz-user-agent"); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI" {
+		t.Errorf("unexpected rust runtime x-amz-user-agent: %s", got)
+	}
+}
+
+func TestBuildRustUserAgents(t *testing.T) {
+	fp := NewFingerprintManager().GetFingerprint("token-rust-ua")
+	if got := fp.BuildRustStreamingUserAgent(); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected rust streaming user agent: %s", got)
+	}
+	if got := fp.BuildRustStreamingAmzUserAgent(); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected rust streaming x-amz-user-agent: %s", got)
+	}
+	if got := fp.BuildRustRuntimeUserAgent(); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected rust runtime user agent: %s", got)
+	}
+	if got := fp.BuildRustRuntimeAmzUserAgent(); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected rust runtime x-amz-user-agent: %s", got)
 	}
 }
 

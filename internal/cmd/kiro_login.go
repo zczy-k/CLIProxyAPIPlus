@@ -164,6 +164,42 @@ func DoKiroAWSAuthCodeLogin(cfg *config.Config, options *LoginOptions) {
 	fmt.Println("Kiro AWS authentication successful!")
 }
 
+func DoKiroCLILogin(cfg *config.Config, options *LoginOptions) {
+	if options == nil {
+		options = &LoginOptions{}
+	}
+
+	manager := newAuthManager()
+	authenticator := sdkAuth.NewKiroAuthenticator()
+	record, err := authenticator.LoginWithCLI(context.Background(), cfg, &sdkAuth.LoginOptions{
+		NoBrowser: options.NoBrowser,
+		Metadata:  map[string]string{},
+		Prompt:    options.Prompt,
+	})
+	if err != nil {
+		log.Errorf("Kiro CLI authentication failed: %v", err)
+		fmt.Println("\nTroubleshooting:")
+		fmt.Println("1. Complete the browser login flow")
+		fmt.Println("2. Ensure callback port 3128 is available")
+		fmt.Println("3. If callback fails, try: --kiro-import (after logging in via Kiro IDE)")
+		return
+	}
+
+	savedPath, err := manager.SaveAuth(record, cfg)
+	if err != nil {
+		log.Errorf("Failed to save auth: %v", err)
+		return
+	}
+
+	if savedPath != "" {
+		fmt.Printf("Authentication saved to %s\n", savedPath)
+	}
+	if record != nil && record.Label != "" {
+		fmt.Printf("Authenticated as %s\n", record.Label)
+	}
+	fmt.Println("Kiro CLI authentication successful!")
+}
+
 // DoKiroImport imports Kiro token from Kiro IDE's token file.
 // This is useful for users who have already logged in via Kiro IDE
 // and want to use the same credentials in CLI Proxy API.

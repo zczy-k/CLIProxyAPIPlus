@@ -242,6 +242,14 @@ func (fp *Fingerprint) BuildUserAgent() string {
 	)
 }
 
+func (fp *Fingerprint) BuildRustStreamingUserAgent() string {
+	return "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI"
+}
+
+func (fp *Fingerprint) BuildRustStreamingAmzUserAgent() string {
+	return "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
+}
+
 // BuildAmzUserAgent format: aws-sdk-js/{SDKVersion} KiroIDE-{KiroVersion}-{KiroHash}
 func (fp *Fingerprint) BuildAmzUserAgent() string {
 	return fmt.Sprintf(
@@ -250,6 +258,14 @@ func (fp *Fingerprint) BuildAmzUserAgent() string {
 		fp.KiroVersion,
 		fp.KiroHash,
 	)
+}
+
+func (fp *Fingerprint) BuildRustRuntimeUserAgent() string {
+	return "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI"
+}
+
+func (fp *Fingerprint) BuildRustRuntimeAmzUserAgent() string {
+	return "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererruntime/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI"
 }
 
 func SetOIDCHeaders(req *http.Request) {
@@ -263,16 +279,21 @@ func SetOIDCHeaders(req *http.Request) {
 	req.Header.Set("amz-sdk-request", "attempt=1; max=4")
 }
 
-func setRuntimeHeaders(req *http.Request, accessToken string, accountKey string) {
+func setRuntimeHeaders(req *http.Request, accessToken string, accountKey, authMethod string) {
 	fp := GlobalFingerprintManager().GetFingerprint(accountKey)
-	machineID := fp.KiroHash
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s",
-		fp.RuntimeSDKVersion, fp.KiroVersion, machineID))
-	req.Header.Set("User-Agent", fmt.Sprintf(
-		"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererruntime#%s m/N,E KiroIDE-%s-%s",
-		fp.RuntimeSDKVersion, fp.OSType, fp.OSVersion, fp.NodeVersion, fp.RuntimeSDKVersion,
-		fp.KiroVersion, machineID))
+	if IsKiroCLIAuthMethod(authMethod) {
+		req.Header.Set("x-amz-user-agent", fp.BuildRustRuntimeAmzUserAgent())
+		req.Header.Set("User-Agent", fp.BuildRustRuntimeUserAgent())
+	} else {
+		machineID := fp.KiroHash
+		req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/%s KiroIDE-%s-%s",
+			fp.RuntimeSDKVersion, fp.KiroVersion, machineID))
+		req.Header.Set("User-Agent", fmt.Sprintf(
+			"aws-sdk-js/%s ua/2.1 os/%s#%s lang/js md/nodejs#%s api/codewhispererruntime#%s m/N,E KiroIDE-%s-%s",
+			fp.RuntimeSDKVersion, fp.OSType, fp.OSVersion, fp.NodeVersion, fp.RuntimeSDKVersion,
+			fp.KiroVersion, machineID))
+	}
 	req.Header.Set("amz-sdk-invocation-id", uuid.New().String())
 	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
 }

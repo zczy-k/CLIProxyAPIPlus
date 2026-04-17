@@ -2,6 +2,7 @@ package executor
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
@@ -281,8 +282,8 @@ func TestGetAuthValue(t *testing.T) {
 			expected: "attribute_value",
 		},
 		{
-			name: "Both nil",
-			auth: &cliproxyauth.Auth{},
+			name:     "Both nil",
+			auth:     &cliproxyauth.Auth{},
 			key:      "test_key",
 			expected: "",
 		},
@@ -326,9 +327,9 @@ func TestGetAuthValue(t *testing.T) {
 
 func TestGetAccountKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		auth     *cliproxyauth.Auth
-		checkFn  func(t *testing.T, result string)
+		name    string
+		auth    *cliproxyauth.Auth
+		checkFn func(t *testing.T, result string)
 	}{
 		{
 			name: "From client_id",
@@ -419,5 +420,38 @@ func TestEndpointAliases(t *testing.T) {
 	// Verify no unexpected aliases
 	if len(endpointAliases) != len(expectedAliases) {
 		t.Errorf("unexpected number of aliases: got %d, want %d", len(endpointAliases), len(expectedAliases))
+	}
+}
+
+func TestApplyDynamicFingerprintKiroCLI(t *testing.T) {
+	req, _ := http.NewRequest("POST", "https://example.com", nil)
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"auth_method": "kiro-cli"}}
+
+	applyDynamicFingerprint(req, auth)
+
+	if got := req.Header.Get("User-Agent"); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 md/appVersion-2.0.0 app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected User-Agent: %s", got)
+	}
+	if got := req.Header.Get("X-Amz-User-Agent"); got != "aws-sdk-rust/1.3.14 ua/2.1 api/codewhispererstreaming/0.1.14474 os/linux lang/rust/1.92.0 m/F app/AmazonQ-For-CLI" {
+		t.Fatalf("unexpected X-Amz-User-Agent: %s", got)
+	}
+	if got := req.Header.Get("x-amzn-codewhisperer-optout"); got != "false" {
+		t.Fatalf("unexpected optout header: %s", got)
+	}
+	if got := req.Header.Get("x-amzn-kiro-agent-mode"); got != "" {
+		t.Fatalf("agent mode header must be absent for kiro-cli, got: %s", got)
+	}
+}
+
+func TestResolveRequestOriginKiroCLI(t *testing.T) {
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{"auth_method": "kiro-cli"}}
+	if got := resolveRequestOrigin(auth, "AI_EDITOR"); got != "KIRO_CLI" {
+		t.Fatalf("origin mismatch: got %s want KIRO_CLI", got)
+	}
+	if got := resolveRequestOrigin(auth, "CLI"); got != "CLI" {
+		t.Fatalf("origin mismatch: got %s want CLI", got)
+	}
+	if got := resolveRequestOrigin(nil, "AI_EDITOR"); got != "AI_EDITOR" {
+		t.Fatalf("origin mismatch: got %s want AI_EDITOR", got)
 	}
 }
