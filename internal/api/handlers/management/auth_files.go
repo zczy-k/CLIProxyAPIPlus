@@ -4437,13 +4437,10 @@ func (h *Handler) RequestKiloToken(c *gin.Context) {
 	})
 }
 
-<<<<<<< HEAD
 // RequestCursorToken initiates the Cursor PKCE authentication flow.
 // Supports multiple accounts via ?label=xxx query parameter.
 // The user opens the returned URL in a browser, logs in, and the server polls
 // until the authentication completes.
-=======
->>>>>>> 3e30ab1e (chore: remove Qoder/Ralph support and stabilize test suite)
 func (h *Handler) RequestCursorToken(c *gin.Context) {
 	ctx := context.Background()
 	ctx = PopulateAuthContext(ctx, c)
