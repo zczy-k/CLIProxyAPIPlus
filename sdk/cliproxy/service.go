@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	kilocodeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kilocode"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
@@ -442,14 +441,12 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "cline":
 		s.coreManager.RegisterExecutor(executor.NewClineExecutor(s.cfg))
-	case "kilo":
+	case "kilo", "kilocode":
 		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(s.cfg))
 	case "cursor":
 		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(s.cfg))
 	case "github-copilot":
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(s.cfg))
-	case "kilocode":
-		s.coreManager.RegisterExecutor(executor.NewKilocodeExecutor(s.cfg))
 	case "codebuddy":
 		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(s.cfg))
 	case "codebuddy-intl":
@@ -1662,47 +1659,6 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	models = generateKiroAgenticVariants(models)
 
 	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
-	return models
-}
-
-// fetchKilocodeModels attempts to dynamically fetch Kilocode models from the API.
-// If dynamic fetch fails, it falls back to static registry.GetKilocodeModels().
-func (s *Service) fetchKilocodeModels(a *coreauth.Auth) []*ModelInfo {
-	if a == nil {
-		log.Debug("kilocode: auth is nil, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	token := s.extractKilocodeToken(a)
-	if token == "" {
-		log.Debug("kilocode: no valid token in auth, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	// Create KilocodeAuth instance
-	kAuth := kilocodeauth.NewKilocodeAuth(s.cfg)
-	if kAuth == nil {
-		log.Warn("kilocode: failed to create KilocodeAuth instance, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	// Use timeout context for API call
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	// Attempt to fetch dynamic models
-	models, err := kAuth.FetchModels(ctx, token)
-	if err != nil {
-		log.Warnf("kilocode: failed to fetch dynamic models: %v, using static models", err)
-		return registry.GetKilocodeModels()
-	}
-
-	if len(models) == 0 {
-		log.Debug("kilocode: API returned no models, using static models")
-		return registry.GetKilocodeModels()
-	}
-
-	log.Infof("kilocode: successfully fetched %d free models from API", len(models))
 	return models
 }
 
